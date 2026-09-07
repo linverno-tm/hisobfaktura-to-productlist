@@ -13,7 +13,7 @@ Bu fayl GitHub'da saqlanadi va launcher.py orqali har ishga tushganda
 avtomatik yangilanadi — bu yerni tahrirlash = barcha foydalanuvchilarning
 dasturi keyingi ochilishda yangilanadi degani.
 """
-__version__ = "2026-09-07.4"
+__version__ = "2026-09-07.5"
 
 import os
 import re
@@ -450,6 +450,7 @@ class App:
         self.output_dir = None
         self.combine_var = tk.BooleanVar(value=True)
         self.log_queue = queue.Queue()
+        self.manual_items = []
 
         self._setup_style()
         self._build_ui()
@@ -568,7 +569,23 @@ class App:
 
         self._separator(outer)
 
-        # 3) Boshlash
+        # 3) Qo'lda qo'shish
+        self._section_title(outer, "3. Yoki mahsulotni qo'lda kiriting")
+        ttk.Label(
+            outer,
+            text="Fayl orqali to'g'ri o'qilmaydigan yoki alohida tovar uchun.",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(0, 8))
+        row_manual = ttk.Frame(outer)
+        row_manual.pack(fill="x")
+        ttk.Button(row_manual, text="Mahsulot qo'shish", style="Secondary.TButton",
+                   command=self.open_manual_entry_dialog).pack(side="left")
+        self.manual_count_label = ttk.Label(row_manual, text="Qo'lda qo'shilgan yo'q", style="Muted.TLabel")
+        self.manual_count_label.pack(side="left", padx=(14, 0))
+
+        self._separator(outer)
+
+        # 4) Boshlash
         step3 = ttk.Frame(outer)
         step3.pack(fill="x")
         self.start_btn = ttk.Button(step3, text="Boshlash", style="Primary.TButton",
@@ -619,6 +636,140 @@ class App:
         self.files_listbox.delete(0, "end")
         self._update_files_count_label()
 
+    # ---------- Qo'lda kiritish ----------
+    def _update_manual_count_label(self):
+        n = len(self.manual_items)
+        text = "Qo'lda qo'shilgan yo'q" if n == 0 else f"{n} ta qo'lda qo'shildi"
+        self.manual_count_label.config(text=text)
+
+    def open_manual_entry_dialog(self):
+        win = tk.Toplevel(self.root)
+        win.title("Mahsulot qo'shish")
+        win.configure(bg=BG)
+        win.geometry("460x520")
+        win.transient(self.root)
+        win.grab_set()
+
+        form = ttk.Frame(win, padding=20)
+        form.pack(fill="both", expand=True)
+
+        def field(label_text):
+            ttk.Label(form, text=label_text, style="TLabel").pack(anchor="w", pady=(10, 3))
+
+        field("Nomi *")
+        name_entry = ttk.Entry(form, font=FONT)
+        name_entry.pack(fill="x")
+
+        field("Shtrix kod (bo'sh — avtomatik 1111111111111)")
+        barcode_entry = ttk.Entry(form, font=FONT)
+        barcode_entry.pack(fill="x")
+
+        field("Ед. измерения")
+        unit_combo = ttk.Combobox(form, values=UNITS, state="readonly", font=FONT)
+        unit_combo.set("штук")
+        unit_combo.pack(fill="x")
+
+        field("Narx (so'm) *")
+        price_entry = ttk.Entry(form, font=FONT)
+        price_entry.pack(fill="x")
+
+        field("НДС %")
+        vat_combo = ttk.Combobox(form, values=VATS, state="readonly", font=FONT)
+        vat_combo.set("12.00")
+        vat_combo.pack(fill="x")
+
+        field("ИКПУ (17 xonali kod)")
+        ikpu_row = ttk.Frame(form)
+        ikpu_row.pack(fill="x")
+        ikpu_entry = ttk.Entry(ikpu_row, font=FONT)
+        ikpu_entry.pack(side="left", fill="x", expand=True)
+        classifier_status = ttk.Label(form, text="", style="Muted.TLabel")
+
+        classifier_code_holder = {"value": None}
+
+        def lookup_classifier():
+            ikpu = ikpu_entry.get().strip()
+            if not ikpu:
+                return
+            classifier_status.config(text="Qidirilmoqda...")
+
+            def worker():
+                code, err = fetch_classifier_code(ikpu)
+                def apply():
+                    classifier_code_holder["value"] = code
+                    if code:
+                        classifier_status.config(text=f"✓ Tasnif kodi topildi: {code}")
+                    else:
+                        classifier_status.config(text=f"⚠ Topilmadi: {err or 'ИКПУ noto\'g\'ri bo\'lishi mumkin'}")
+                self.root.after(0, apply)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        ttk.Button(ikpu_row, text="Tasnif kodini top", style="Secondary.TButton",
+                   command=lookup_classifier).pack(side="left", padx=(8, 0))
+        classifier_status.pack(anchor="w", pady=(4, 0))
+
+        vars_row = ttk.Frame(form)
+        vars_row.pack(fill="x", pady=(14, 0))
+        favourite_var = tk.BooleanVar(value=True)
+        marking_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(vars_row, text="Избранное", variable=favourite_var).pack(side="left")
+        ttk.Checkbutton(vars_row, text="Маркировка", variable=marking_var).pack(side="left", padx=(20, 0))
+
+        error_label = ttk.Label(form, text="", style="Muted.TLabel", foreground="#dc2626")
+        error_label.pack(anchor="w", pady=(10, 0))
+
+        btn_row = ttk.Frame(form)
+        btn_row.pack(fill="x", pady=(16, 0))
+
+        def submit(close_after):
+            name = name_entry.get().strip()
+            price_raw = price_entry.get().strip().replace(",", ".")
+            if not name or not price_raw:
+                error_label.config(text="Nomi va narxni to'ldiring.")
+                return
+            try:
+                price = format(float(price_raw), ".2f")
+            except ValueError:
+                error_label.config(text="Narx noto'g'ri formatda.")
+                return
+
+            barcode = barcode_entry.get().strip() or DEFAULT_BARCODE
+            ikpu = ikpu_entry.get().strip()
+            item = {
+                "name": name,
+                "barcode": barcode,
+                "unit": unit_combo.get() or "штук",
+                "price": price,
+                "vat": vat_combo.get() or "12.00",
+                "favourite": "Да" if favourite_var.get() else "Нет",
+                "marking": "Да" if marking_var.get() else "Нет",
+                "ikpu": ikpu,
+                "classifier_code": classifier_code_holder["value"],
+            }
+            self.manual_items.append(item)
+            self._update_manual_count_label()
+            self._log(f"Qo'lda qo'shildi: {name}")
+
+            if close_after:
+                win.destroy()
+            else:
+                name_entry.delete(0, "end")
+                barcode_entry.delete(0, "end")
+                price_entry.delete(0, "end")
+                ikpu_entry.delete(0, "end")
+                classifier_status.config(text="")
+                classifier_code_holder["value"] = None
+                error_label.config(text="")
+                name_entry.focus_set()
+
+        ttk.Button(btn_row, text="Qo'shish va yana", style="Secondary.TButton",
+                   command=lambda: submit(False)).pack(side="left")
+        ttk.Button(btn_row, text="Qo'shish va yopish", style="Primary.TButton",
+                   command=lambda: submit(True)).pack(side="left", padx=(8, 0))
+
+        name_entry.focus_set()
+
     def choose_output_dir(self):
         d = filedialog.askdirectory(title="Natijalarni qayerga saqlash kerak?")
         if d:
@@ -633,6 +784,14 @@ class App:
         d = self.output_dir or (os.path.dirname(self.selected_files[0]) if self.selected_files else None)
         if d and os.path.isdir(d):
             os.startfile(d)
+
+    def _default_out_dir(self):
+        if self.output_dir:
+            return self.output_dir
+        if self.selected_files:
+            return os.path.dirname(self.selected_files[0]) or "."
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        return desktop if os.path.isdir(desktop) else os.path.expanduser("~")
 
     # ---------- Log ----------
     def _log(self, text):
@@ -652,8 +811,11 @@ class App:
 
     # ---------- Konvertatsiya ----------
     def start_conversion(self):
-        if not self.selected_files:
-            messagebox.showwarning("Diqqat", "Avval hisob-faktura fayl(lar)ini tanlang.")
+        if not self.selected_files and not self.manual_items:
+            messagebox.showwarning(
+                "Diqqat",
+                "Avval hisob-faktura fayl(lar)ini tanlang yoki 'Mahsulot qo'shish' orqali qo'lda kiriting.",
+            )
             return
         self.start_btn.config(state="disabled", text="Ishlanmoqda...")
         self.open_folder_btn.config(state="disabled")
@@ -666,6 +828,19 @@ class App:
         saved_paths = []
         error_count = 0
         classifier_cache = {}
+
+        if self.manual_items:
+            self._log(f"\n--- Qo'lda kiritilgan mahsulotlar ({len(self.manual_items)} ta) ---")
+            enrich_classifier_codes(self.manual_items, classifier_cache, self._log)
+            if combine:
+                combined_items.extend(self.manual_items)
+            else:
+                out_dir = self._default_out_dir()
+                stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+                out_path = unique_path(out_dir, f"product_list_qolda_{stamp}.xlsx")
+                write_product_list(self.manual_items, out_path)
+                saved_paths.append(out_path)
+                self._log(f"Saqlandi: {out_path}")
 
         for path in self.selected_files:
             base = os.path.basename(path)
@@ -692,7 +867,7 @@ class App:
                 self._log(f"XATOLIK: {exc}")
 
         if combine and combined_items:
-            out_dir = self.output_dir or os.path.dirname(self.selected_files[0]) or "."
+            out_dir = self._default_out_dir()
             stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
             out_path = unique_path(out_dir, f"product_list_combined_{stamp}.xlsx")
             write_product_list(combined_items, out_path)
