@@ -13,7 +13,7 @@ Bu fayl GitHub'da saqlanadi va launcher.py orqali har ishga tushganda
 avtomatik yangilanadi — bu yerni tahrirlash = barcha foydalanuvchilarning
 dasturi keyingi ochilishda yangilanadi degani.
 """
-__version__ = "2026-09-07.3"
+__version__ = "2026-09-07.4"
 
 import os
 import re
@@ -84,6 +84,15 @@ UNIT_MAP = {
     "inson": "человек", "kishi": "человек", "chelovek": "человек",
     "gektar": "гектар",
     "sotix": "сотих", "sotih": "сотих",
+    # kirillcha qisqartma/variantlar — ba'zi hisob-fakturalarda "dona" o'rniga
+    # to'g'ridan-to'g'ri shu ko'rinishda keladi
+    "шт": "штук", "шт.": "штук", "штук.": "штук", "штука": "штук",
+    "кг": "килограмм", "кг.": "килограмм",
+    "л": "литр", "л.": "литр",
+    "уп": "упаковка", "уп.": "упаковка", "упак": "упаковка", "упак.": "упаковка",
+    "компл": "комплект", "компл.": "комплект", "к-т": "комплект",
+    "пар": "пара",
+    "пач": "пачка", "пач.": "пачка",
 }
 
 
@@ -168,6 +177,16 @@ def map_unit(raw, warnings, name):
     base = re.sub(r"\(.*?\)", "", raw).strip().lower()
     if base in UNIT_MAP:
         return UNIT_MAP[base]
+    if base in UNITS:
+        return base
+
+    # "потребительская коробка=1 шт" kabi tavsifiy matn ichidan ham
+    # tanish so'zni (masalan "шт") alohida so'z sifatida qidiramiz —
+    # eng uzun kalitdan boshlab, noto'g'ri qisman moslikni oldini olish uchun.
+    for key in sorted(UNIT_MAP, key=len, reverse=True):
+        if re.search(rf"(?<!\w){re.escape(key)}(?!\w)", base):
+            return UNIT_MAP[key]
+
     mapped = raw.strip()
     if mapped not in UNITS:
         warnings.append(
