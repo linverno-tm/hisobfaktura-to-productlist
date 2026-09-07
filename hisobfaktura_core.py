@@ -13,7 +13,7 @@ Bu fayl GitHub'da saqlanadi va launcher.py orqali har ishga tushganda
 avtomatik yangilanadi — bu yerni tahrirlash = barcha foydalanuvchilarning
 dasturi keyingi ochilishda yangilanadi degani.
 """
-__version__ = "2026-09-07.2"
+__version__ = "2026-09-07.3"
 
 import os
 import re
@@ -405,18 +405,34 @@ def default_out_name(in_path):
 # GUI
 # ---------------------------------------------------------------------------
 
+# Minimalistik rang palitrasi
+BG = "#fafafa"        # oyna foni
+CARD = "#ffffff"      # kartochka/log foni
+BORDER = "#e5e7eb"    # nozik chiziqlar
+TEXT = "#111827"      # asosiy matn
+MUTED = "#6b7280"     # ikkinchi darajali matn
+ACCENT = "#2563eb"    # asosiy tugma (ko'k)
+ACCENT_DARK = "#1d4ed8"
+FONT = ("Segoe UI", 10)
+FONT_BOLD = ("Segoe UI", 10, "bold")
+FONT_TITLE = ("Segoe UI", 13, "bold")
+FONT_MONO = ("Consolas", 9)
+
+
 class App:
     def __init__(self, root):
         self.root = root
-        root.title(f"Hisob-faktura → Product list (v{__version__})")
-        root.geometry("820x600")
-        root.minsize(700, 480)
+        root.title(f"Hisob-faktura → Product list")
+        root.geometry("760x620")
+        root.minsize(640, 480)
+        root.configure(bg=BG)
 
         self.selected_files = []
         self.output_dir = None
         self.combine_var = tk.BooleanVar(value=True)
         self.log_queue = queue.Queue()
 
+        self._setup_style()
         self._build_ui()
         self._poll_log_queue()
         self._log(f"Dastur versiyasi: {__version__}")
@@ -431,50 +447,135 @@ class App:
         root.after(300, lambda: root.attributes("-topmost", False))
         root.focus_force()
 
+    # ---------- Uslub ----------
+    def _setup_style(self):
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure(".", background=BG, foreground=TEXT, font=FONT)
+        style.configure("TFrame", background=BG)
+        style.configure("Card.TFrame", background=CARD)
+        style.configure("TLabel", background=BG, foreground=TEXT, font=FONT)
+        style.configure("Muted.TLabel", background=BG, foreground=MUTED, font=FONT)
+        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=FONT_TITLE)
+        style.configure("Section.TLabel", background=BG, foreground=TEXT, font=FONT_BOLD)
+        style.configure("Count.TLabel", background=BG, foreground=MUTED, font=FONT)
+
+        style.configure("TCheckbutton", background=BG, foreground=TEXT, font=FONT)
+        style.map("TCheckbutton", background=[("active", BG)])
+
+        style.configure("TSeparator", background=BORDER)
+
+        # Ikkinchi darajali (neytral) tugma
+        style.configure(
+            "Secondary.TButton", background=CARD, foreground=TEXT,
+            font=FONT, borderwidth=1, relief="solid", padding=(12, 7),
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("active", "#f3f4f6"), ("disabled", "#f3f4f6")],
+            foreground=[("disabled", MUTED)],
+            bordercolor=[("!disabled", BORDER)],
+        )
+
+        # Asosiy (accent) tugma
+        style.configure(
+            "Primary.TButton", background=ACCENT, foreground="#ffffff",
+            font=FONT_BOLD, borderwidth=0, padding=(16, 9),
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", ACCENT_DARK), ("disabled", "#9ca3af")],
+            foreground=[("disabled", "#f3f4f6")],
+        )
+
     # ---------- UI qurish ----------
+    def _section_title(self, parent, text):
+        ttk.Label(parent, text=text, style="Section.TLabel").pack(anchor="w", pady=(0, 8))
+
+    def _separator(self, parent):
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=18)
+
     def _build_ui(self):
-        pad = {"padx": 10, "pady": 6}
+        outer = ttk.Frame(self.root, padding=24)
+        outer.pack(fill="both", expand=True)
 
-        step1 = ttk.LabelFrame(self.root, text="1) Hisob-faktura fayllarini tanlang")
-        step1.pack(fill="x", **pad)
+        ttk.Label(outer, text="Hisob-faktura → Product list", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            outer, text="Hisob-faktura fayllarini SmartPOS uchun tayyor Excelga aylantiring",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
 
-        btn_row = ttk.Frame(step1)
-        btn_row.pack(fill="x", padx=8, pady=6)
-        ttk.Button(btn_row, text="Fayl(lar) tanlash...", command=self.choose_files).pack(side="left")
-        ttk.Button(btn_row, text="Ro'yxatni tozalash", command=self.clear_files).pack(side="left", padx=6)
-        self.files_count_label = ttk.Label(btn_row, text="0 ta fayl tanlandi")
-        self.files_count_label.pack(side="left", padx=10)
+        self._separator(outer)
 
-        self.files_listbox = tk.Listbox(step1, height=6, selectmode="extended")
-        self.files_listbox.pack(fill="x", padx=8, pady=(0, 8))
+        # 1) Fayllar
+        self._section_title(outer, "1. Fayllarni tanlang")
+        btn_row = ttk.Frame(outer)
+        btn_row.pack(fill="x")
+        ttk.Button(btn_row, text="Fayl tanlash", style="Primary.TButton",
+                   command=self.choose_files).pack(side="left")
+        ttk.Button(btn_row, text="Tozalash", style="Secondary.TButton",
+                   command=self.clear_files).pack(side="left", padx=(8, 0))
+        self.files_count_label = ttk.Label(btn_row, text="Fayl tanlanmagan", style="Count.TLabel")
+        self.files_count_label.pack(side="left", padx=(14, 0))
 
-        step2 = ttk.LabelFrame(self.root, text="2) Natijalarni qayerga saqlash")
-        step2.pack(fill="x", **pad)
-        row2 = ttk.Frame(step2)
-        row2.pack(fill="x", padx=8, pady=6)
-        ttk.Button(row2, text="Papka tanlash...", command=self.choose_output_dir).pack(side="left")
-        self.output_label = ttk.Label(row2, text="(tanlanmadi, fayl turgan joyga saqlanadi)")
-        self.output_label.pack(side="left", padx=10)
+        list_wrap = tk.Frame(outer, bg=BORDER)
+        list_wrap.pack(fill="x", pady=(12, 0))
+        self.files_listbox = tk.Listbox(
+            list_wrap, height=5, selectmode="extended", relief="flat",
+            bg=CARD, fg=TEXT, font=FONT, highlightthickness=0,
+            selectbackground=ACCENT, selectforeground="#ffffff",
+        )
+        self.files_listbox.pack(fill="x", padx=1, pady=1)
+
+        self._separator(outer)
+
+        # 2) Saqlash
+        self._section_title(outer, "2. Natijani qayerga saqlash")
+        row2 = ttk.Frame(outer)
+        row2.pack(fill="x")
+        ttk.Button(row2, text="Papka tanlash", style="Secondary.TButton",
+                   command=self.choose_output_dir).pack(side="left")
+        self.output_label = ttk.Label(row2, text="Fayl turgan joyga saqlanadi", style="Muted.TLabel")
+        self.output_label.pack(side="left", padx=(14, 0))
 
         ttk.Checkbutton(
-            step2, text="Barcha tanlangan fayllarni BITTA Excelga birlashtirish",
+            outer, text="Barchasini BITTA Excel fayliga birlashtirish",
             variable=self.combine_var,
-        ).pack(anchor="w", padx=8, pady=(0, 6))
+        ).pack(anchor="w", pady=(14, 0))
 
-        step3 = ttk.Frame(self.root)
-        step3.pack(fill="x", **pad)
-        self.start_btn = ttk.Button(step3, text="Boshlash", command=self.start_conversion)
+        self._separator(outer)
+
+        # 3) Boshlash
+        step3 = ttk.Frame(outer)
+        step3.pack(fill="x")
+        self.start_btn = ttk.Button(step3, text="Boshlash", style="Primary.TButton",
+                                     command=self.start_conversion)
         self.start_btn.pack(side="left")
-        self.open_folder_btn = ttk.Button(step3, text="Papkani ochish", command=self.open_output_folder, state="disabled")
-        self.open_folder_btn.pack(side="left", padx=6)
+        self.open_folder_btn = ttk.Button(
+            step3, text="Papkani ochish", style="Secondary.TButton",
+            command=self.open_output_folder, state="disabled",
+        )
+        self.open_folder_btn.pack(side="left", padx=(8, 0))
 
-        log_frame = ttk.LabelFrame(self.root, text="Jarayon / natija")
-        log_frame.pack(fill="both", expand=True, **pad)
-        self.log_text = tk.Text(log_frame, wrap="word", state="disabled")
-        scroll = ttk.Scrollbar(log_frame, command=self.log_text.yview)
+        # Jurnal / natija
+        ttk.Label(outer, text="Jarayon", style="Muted.TLabel").pack(anchor="w", pady=(20, 6))
+        log_wrap = tk.Frame(outer, bg=BORDER)
+        log_wrap.pack(fill="both", expand=True)
+        log_inner = tk.Frame(log_wrap, bg=CARD)
+        log_inner.pack(fill="both", expand=True, padx=1, pady=1)
+        self.log_text = tk.Text(
+            log_inner, wrap="word", state="disabled", relief="flat",
+            bg=CARD, fg=TEXT, font=FONT_MONO, highlightthickness=0,
+            padx=10, pady=8,
+        )
+        scroll = ttk.Scrollbar(log_inner, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scroll.set)
-        self.log_text.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
-        scroll.pack(side="right", fill="y", pady=8, padx=(0, 8))
+        self.log_text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
 
     # ---------- Fayl tanlash ----------
     def choose_files(self):
@@ -487,12 +588,17 @@ class App:
             if p not in self.selected_files:
                 self.selected_files.append(p)
                 self.files_listbox.insert("end", os.path.basename(p))
-        self.files_count_label.config(text=f"{len(self.selected_files)} ta fayl tanlandi")
+        self._update_files_count_label()
+
+    def _update_files_count_label(self):
+        n = len(self.selected_files)
+        text = "Fayl tanlanmagan" if n == 0 else f"{n} ta fayl tanlandi"
+        self.files_count_label.config(text=text)
 
     def clear_files(self):
         self.selected_files = []
         self.files_listbox.delete(0, "end")
-        self.files_count_label.config(text="0 ta fayl tanlandi")
+        self._update_files_count_label()
 
     def choose_output_dir(self):
         d = filedialog.askdirectory(title="Natijalarni qayerga saqlash kerak?")
@@ -502,7 +608,7 @@ class App:
             self._log(f"Saqlash papkasi tanlandi: {d}")
         else:
             self.output_dir = None
-            self.output_label.config(text="(tanlanmadi, fayl turgan joyga saqlanadi)")
+            self.output_label.config(text="Fayl turgan joyga saqlanadi")
 
     def open_output_folder(self):
         d = self.output_dir or (os.path.dirname(self.selected_files[0]) if self.selected_files else None)
