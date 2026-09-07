@@ -23,6 +23,14 @@ RAW_URL = (
     "https://raw.githubusercontent.com/linverno-tm/"
     "hisobfaktura-to-productlist/main/hisobfaktura_core.py"
 )
+# raw.githubusercontent.com CDN'i yangi push'dan keyin bir necha daqiqa
+# kechikishi mumkin — shuning uchun asosiy manba sifatida GitHub API
+# ishlatiladi (kechikishsiz, doim eng so'nggi commit'ni beradi), raw URL
+# esa zaxira sifatida qoladi.
+API_URL = (
+    "https://api.github.com/repos/linverno-tm/"
+    "hisobfaktura-to-productlist/contents/hisobfaktura_core.py?ref=main"
+)
 APP_DIR_NAME = "HisobFaktura2ProductList"
 FETCH_TIMEOUT = 4  # soniya
 
@@ -41,12 +49,22 @@ def _bundled_fallback_path():
 
 
 def _load_from_url():
-    with urllib.request.urlopen(RAW_URL, timeout=FETCH_TIMEOUT) as resp:
-        data = resp.read()
-    text = data.decode("utf-8")
-    if "class App" not in text or "def main" not in text:
-        raise ValueError("yuklab olingan fayl noto'g'ri ko'rinadi")
-    return text
+    errors = []
+    for url, headers in (
+        (API_URL, {"Accept": "application/vnd.github.raw", "User-Agent": "HisobFaktura2ProductList"}),
+        (RAW_URL, {"User-Agent": "HisobFaktura2ProductList"}),
+    ):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
+                data = resp.read()
+            text = data.decode("utf-8")
+            if "class App" not in text or "def main" not in text:
+                raise ValueError("yuklab olingan fayl noto'g'ri ko'rinadi")
+            return text
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{url}: {exc}")
+    raise RuntimeError("; ".join(errors))
 
 
 def load_core_source():

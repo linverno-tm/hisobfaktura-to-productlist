@@ -13,14 +13,17 @@ Bu fayl GitHub'da saqlanadi va launcher.py orqali har ishga tushganda
 avtomatik yangilanadi — bu yerni tahrirlash = barcha foydalanuvchilarning
 dasturi keyingi ochilishda yangilanadi degani.
 """
-__version__ = "2026-09-07.1"
+__version__ = "2026-09-07.2"
 
 import os
 import re
 import sys
+import json
 import threading
 import queue
 import datetime
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 import openpyxl
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -202,6 +205,74 @@ def extract_ikpu(text):
     if m:
         return m.group(0)
     return text.split("\n")[0].strip()
+
+
+# ---------------------------------------------------------------------------
+# ИКПУ -> "Код ед. измерения тасниф" (rasmiy tasnif.soliq.uz orqali)
+# ---------------------------------------------------------------------------
+# Sayt ИКПУни shu "тасниф" kodi bilan birga tekshiradi — u yo'q bo'lsa,
+# hatto to'g'ri ИКПУ ham "ИКПУ неверна" deb rad etiladi.
+
+IKPU_API_URL = "https://tasnif.soliq.uz/api/cls-api/mxik/get/by-mxik"
+
+
+def fetch_classifier_code(ikpu, timeout=6):
+    """Bitta ИКПУ uchun rasmiy 'Код ед. измерения тасниф' kodini oladi.
+
+    Qaytaradi: (kod_yoki_None, xatolik_matni_yoki_None)
+    """
+    if not ikpu:
+        return None, None
+    try:
+        url = f"{IKPU_API_URL}?mxikCode={ikpu}&lang=uz"
+        req = urllib.request.Request(url, headers={"User-Agent": "HisobFaktura2ProductList"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.load(resp)
+        packages = data.get("packages") or []
+        if not packages:
+            return None, "tasnif.soliq.uz'da bu ИКПУ uchun o'lchov birligi (упаковка) topilmadi"
+        code = packages[0].get("code")
+        return (str(code) if code is not None else None), None
+    except Exception as exc:  # noqa: BLE001
+        return None, str(exc)
+
+
+def enrich_classifier_codes(items, cache=None, log=None):
+    """Har bir mahsulotning 'classifier_code' maydonini tasnif.soliq.uz'dan
+    to'ldiradi. `cache` — {ikpu: kod} lug'ati, bir nechta faylda takrorlangan
+    ИКПУлar uchun qayta so'rov yubormaslik uchun (chaqiruvchi saqlab, keyingi
+    fayllarga ham shu lug'atni berishi mumkin)."""
+    if cache is None:
+        cache = {}
+
+    unique_ikpus = sorted({
+        it["ikpu"] for it in items
+        if it.get("ikpu") and it["ikpu"] not in cache
+    })
+    if unique_ikpus:
+        if log:
+            log(f"ИКПУ kodlari tasnif.soliq.uz'dan tekshirilmoqda ({len(unique_ikpus)} ta noyob kod)...")
+
+        def _lookup(code):
+            val, err = fetch_classifier_code(code)
+            return code, val, err
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for code, val, err in ex.map(_lookup, unique_ikpus):
+                cache[code] = val
+                if err and log:
+                    log(f"  DIQQAT: ИКПУ {code} uchun tasnif kodi topilmadi — {err}")
+
+    missing = 0
+    for it in items:
+        ikpu = it.get("ikpu")
+        if ikpu:
+            it["classifier_code"] = cache.get(ikpu)
+            if not it["classifier_code"]:
+                missing += 1
+    if missing and log:
+        log(f"  {missing} ta mahsulotda 'Код ед. измерения тасниф' topilmadi — saytga yuklashdan oldin qo'lda tekshiring.")
+    return cache
 
 
 def parse_invoice(path):
@@ -469,6 +540,7 @@ class App:
         combined_items = []
         saved_paths = []
         error_count = 0
+        classifier_cache = {}
 
         for path in self.selected_files:
             base = os.path.basename(path)
@@ -479,6 +551,8 @@ class App:
                 self._log(f"{len(items)} ta mahsulot topildi.")
                 for w in warnings:
                     self._log(w)
+
+                enrich_classifier_codes(items, classifier_cache, self._log)
 
                 if combine:
                     combined_items.extend(items)
