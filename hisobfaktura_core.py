@@ -13,7 +13,7 @@ Bu fayl GitHub'da saqlanadi va launcher.py orqali har ishga tushganda
 avtomatik yangilanadi — bu yerni tahrirlash = barcha foydalanuvchilarning
 dasturi keyingi ochilishda yangilanadi degani.
 """
-__version__ = "2026-09-07.5"
+__version__ = "2026-09-07.6"
 
 import os
 import re
@@ -442,8 +442,8 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title(f"Hisob-faktura → Product list")
-        root.geometry("760x620")
-        root.minsize(640, 480)
+        root.geometry("760x830")
+        root.minsize(640, 560)
         root.configure(bg=BG)
 
         self.selected_files = []
@@ -517,7 +517,7 @@ class App:
         ttk.Label(parent, text=text, style="Section.TLabel").pack(anchor="w", pady=(0, 8))
 
     def _separator(self, parent):
-        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=18)
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=13)
 
     def _build_ui(self):
         outer = ttk.Frame(self.root, padding=24)
@@ -545,7 +545,7 @@ class App:
         list_wrap = tk.Frame(outer, bg=BORDER)
         list_wrap.pack(fill="x", pady=(12, 0))
         self.files_listbox = tk.Listbox(
-            list_wrap, height=5, selectmode="extended", relief="flat",
+            list_wrap, height=4, selectmode="extended", relief="flat",
             bg=CARD, fg=TEXT, font=FONT, highlightthickness=0,
             selectbackground=ACCENT, selectforeground="#ffffff",
         )
@@ -606,7 +606,7 @@ class App:
         self.log_text = tk.Text(
             log_inner, wrap="word", state="disabled", relief="flat",
             bg=CARD, fg=TEXT, font=FONT_MONO, highlightthickness=0,
-            padx=10, pady=8,
+            padx=10, pady=8, height=8,
         )
         scroll = ttk.Scrollbar(log_inner, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scroll.set)
@@ -646,7 +646,8 @@ class App:
         win = tk.Toplevel(self.root)
         win.title("Mahsulot qo'shish")
         win.configure(bg=BG)
-        win.geometry("460x520")
+        win.geometry("460x600")
+        win.minsize(420, 560)
         win.transient(self.root)
         win.grab_set()
 
