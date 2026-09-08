@@ -13,7 +13,7 @@ Bu fayl GitHub'da saqlanadi va launcher.py orqali har ishga tushganda
 avtomatik yangilanadi — bu yerni tahrirlash = barcha foydalanuvchilarning
 dasturi keyingi ochilishda yangilanadi degani.
 """
-__version__ = "2026-09-08.3"
+__version__ = "2026-09-08.4"
 
 import os
 import re
@@ -748,8 +748,12 @@ class App:
         outer = ttk.Frame(root_container, padding=(24, 24, 24, 0))
         outer.pack(side="top", fill="both", expand=True)
 
-        title_label = ttk.Label(outer, text="Hisob-faktura → Product list", style="Title.TLabel")
-        title_label.pack(anchor="w")
+        title_row = ttk.Frame(outer)
+        title_row.pack(fill="x")
+        title_label = ttk.Label(title_row, text="Hisob-faktura → Product list", style="Title.TLabel")
+        title_label.pack(side="left", anchor="w")
+        ttk.Button(title_row, text="? Yordam", style="Secondary.TButton",
+                   command=self.show_help).pack(side="right")
         subtitle_label = ttk.Label(
             outer, text="Hisob-faktura fayllarini SmartPOS uchun tayyor Excelga aylantiring",
             style="Muted.TLabel",
@@ -890,6 +894,78 @@ class App:
         self.selected_files = []
         self.files_listbox.delete(0, "end")
         self._update_files_count_label()
+
+    # ---------- Yordam ----------
+    HELP_TEXT = f"""Hisob-faktura → Product list — qisqa qo'llanma
+
+1) FAYL TANLASH
+Hisob-faktura .xls fayl(lar)ini tanlang — bir nechtasini birga tanlash
+mumkin (10-15 tagacha bemalol).
+
+2) SAQLASH
+Natija qayerga saqlanishini tanlang. "Barchasini BITTA Excelga
+birlashtirish" yoqilgan bo'lsa — hammasi bitta faylga yig'iladi.
+
+3) SHABLON
+SmartPOS saytida "Юклаш" tugmasini bosganda qaysi shablon so'ralgani
+muhim:
+  • 15 ustunli (yangi) — standart, hozir asosiy ishlaydigan format.
+  • 9 ustunli (eski) — agar sayt "Название товара, Штрих код..." каби
+    eski ustunlarni kutsa.
+Xato chiqsa (masalan "Количество полей... равно 15" yoki "равно 9"),
+shablonni almashtirib qayta urinib ko'ring.
+
+4) DO'KON NOMI
+Faqat 15 ustunli shablon uchun kerak — SmartPOS'dagi ro'yxatdan o'tgan
+aniq nomni yozing. Bir marta kiritilsa, doim eslab qoladi.
+
+5) QO'LDA QO'SHISH
+Fayl orqali to'g'ri o'qilmaydigan yoki markировка-toifadagi (uy-ro'zg'or
+elektr texnikasi kabi) tovarlar uchun — "Mahsulot qo'shish" tugmasi
+orqali qo'lda kiriting.
+
+MA'LUM CHEKLOV
+Markировка talab qilinadigan tovarlarni SmartPOS Excel orqali ommaviy
+qabul qilmaydi ("ИКПУ неверна" deb rad etadi) — buni saytning o'z
+"tovar qo'shish" bo'limidan qo'lda kiritish kerak. Bu dasturning
+kamchiligi emas.
+
+XATO CHIQSA
+Ekrandagi "Jarayon" oynasida sabab yoziladi. Dastur xatolari avtomatik
+kuzatuv jurnaliga ham tushadi — hech narsa yubormasangiz ham ko'riladi.
+
+Versiya: {__version__}
+"""
+
+    def show_help(self):
+        win = tk.Toplevel(self.root)
+        win.title("Yordam")
+        win.configure(bg=BG)
+        win.geometry("560x640")
+        win.minsize(420, 400)
+        win.transient(self.root)
+        win.grab_set()
+
+        frame = ttk.Frame(win, padding=20)
+        frame.pack(fill="both", expand=True)
+
+        text_wrap = tk.Frame(frame, bg=BORDER)
+        text_wrap.pack(fill="both", expand=True)
+        text_inner = tk.Frame(text_wrap, bg=CARD)
+        text_inner.pack(fill="both", expand=True, padx=1, pady=1)
+        text = tk.Text(
+            text_inner, wrap="word", relief="flat", bg=CARD, fg=TEXT,
+            font=FONT, highlightthickness=0, padx=14, pady=12,
+        )
+        scroll = ttk.Scrollbar(text_inner, command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        text.insert("1.0", self.HELP_TEXT)
+        text.configure(state="disabled")
+
+        ttk.Button(frame, text="Yopish", style="Primary.TButton",
+                   command=win.destroy).pack(anchor="e", pady=(14, 0))
 
     # ---------- Qo'lda kiritish ----------
     def _update_manual_count_label(self):
