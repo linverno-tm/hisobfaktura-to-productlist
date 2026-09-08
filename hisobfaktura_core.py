@@ -13,7 +13,7 @@ Bu fayl GitHub'da saqlanadi va launcher.py orqali har ishga tushganda
 avtomatik yangilanadi — bu yerni tahrirlash = barcha foydalanuvchilarning
 dasturi keyingi ochilishda yangilanadi degani.
 """
-__version__ = "2026-09-07.6"
+__version__ = "2026-09-08.1"
 
 import os
 import re
@@ -294,6 +294,61 @@ def enrich_classifier_codes(items, cache=None, log=None):
     return cache
 
 
+# ---------------------------------------------------------------------------
+# Foydalanish/xato hisoboti (GitHub Issues orqali kuzatuv)
+# ---------------------------------------------------------------------------
+# Bu FAQAT dasturning o'z ishlashidagi xatolarni (fayl o'qilmadi, tarmoq
+# muammosi va h.k.) kuzatadi — SmartPOS sayti faylni qabul qilgach chiqargan
+# xatolar (masalan "ИКПУ неверна") bu yerga tushmaydi, chunki ular dastur
+# ishini tugatgandan KEYIN, saytning o'zida yuz beradi.
+#
+# GitHub'ga YOZISH huquqli token bu yerda SAQLANMAYDI (ochiq fayl bo'lgani
+# uchun xavfsiz emas edi — GitHub buni avtomatik bloklab, to'g'ri qildi).
+# Buning o'rniga kichik Cloudflare Worker orqali yuboriladi: u tokenni o'zida
+# (server tomonida, hech kimga ko'rinmaydigan holda) saqlaydi va shu yerdan
+# GitHub'ga o'zi yozadi. Bu yerdagi APP_KEY — GitHub tokeni EMAS, faqat shu
+# Worker'ni tasodifiy so'rovlardan himoyalash uchun oddiy ilova kaliti;
+# u bilan faqat shu bitta Worker'ga (o'zga hech narsaga) xabar yuborish
+# mumkin.
+
+_REPORT_URL = "https://hf2pl-report.tasks-bot.workers.dev"
+_REPORT_APP_KEY = "OF28Y-uJR3NxaMKPbQBwNhJhpdeZoNwi"
+
+
+def report_event(kind, detail=""):
+    """Foydalanish/xato hodisasini fon rejimida (bloklamasdan) yuboradi.
+    Internet yo'q yoki xato bo'lsa — jim o'tkazib yuboriladi, dastur
+    ishlashiga hech qanday ta'sir qilmaydi."""
+
+    def worker():
+        try:
+            import socket
+            host = socket.gethostname()
+        except Exception:
+            host = "noma'lum"
+        payload = {
+            "kind": kind,
+            "version": __version__,
+            "host": host,
+            "detail": detail[:1500] if detail else "",
+        }
+        try:
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                _REPORT_URL, data=data, method="POST",
+                headers={
+                    "X-App-Key": _REPORT_APP_KEY,
+                    "Content-Type": "application/json",
+                    "User-Agent": "HisobFaktura2ProductList",
+                },
+            )
+            urllib.request.urlopen(req, timeout=6)
+        except Exception:
+            pass  # kuzatuv ishlamasa ham, dastur o'z ishini davom ettiradi
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def parse_invoice(path):
     with open(path, encoding="utf-8", errors="ignore") as fh:
         html = fh.read()
@@ -458,6 +513,7 @@ class App:
         self._log(f"Dastur versiyasi: {__version__}")
         if os.environ.get("HF2PL_UPDATE_STATUS"):
             self._log(os.environ["HF2PL_UPDATE_STATUS"])
+        report_event("🟢 Ishga tushdi")
 
         # dastur doim ko'rinadigan, oldingi planda ochilsin — fonda yashirin
         # ishlamasligi uchun.
@@ -520,14 +576,31 @@ class App:
         ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=13)
 
     def _build_ui(self):
-        outer = ttk.Frame(self.root, padding=24)
-        outer.pack(fill="both", expand=True)
+        # Tashqi konteyner: pastki "footer" (Boshlash tugmasi) DOIM ko'rinadi —
+        # oyna kichraytirilsa, o'sib-kichrayadigan qism (jurnal) siqiladi,
+        # tugmalar hech qachon kesilib qolmaydi.
+        root_container = ttk.Frame(self.root)
+        root_container.pack(fill="both", expand=True)
 
-        ttk.Label(outer, text="Hisob-faktura → Product list", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(
+        footer = ttk.Frame(root_container, padding=(24, 0, 24, 20))
+        footer.pack(side="bottom", fill="x")
+
+        outer = ttk.Frame(root_container, padding=(24, 24, 24, 0))
+        outer.pack(side="top", fill="both", expand=True)
+
+        title_label = ttk.Label(outer, text="Hisob-faktura → Product list", style="Title.TLabel")
+        title_label.pack(anchor="w")
+        subtitle_label = ttk.Label(
             outer, text="Hisob-faktura fayllarini SmartPOS uchun tayyor Excelga aylantiring",
             style="Muted.TLabel",
-        ).pack(anchor="w", pady=(2, 0))
+        )
+        subtitle_label.pack(anchor="w", pady=(2, 0))
+
+        # Oyna kengligiga qarab sarlavha ostidagi matn o'ralishi
+        def _on_resize(event):
+            if event.widget is self.root:
+                subtitle_label.configure(wraplength=max(300, event.width - 48))
+        self.root.bind("<Configure>", _on_resize)
 
         self._separator(outer)
 
@@ -583,10 +656,9 @@ class App:
         self.manual_count_label = ttk.Label(row_manual, text="Qo'lda qo'shilgan yo'q", style="Muted.TLabel")
         self.manual_count_label.pack(side="left", padx=(14, 0))
 
-        self._separator(outer)
-
-        # 4) Boshlash
-        step3 = ttk.Frame(outer)
+        # 4) Boshlash — doim ko'rinadigan footer'da
+        self._separator(footer)
+        step3 = ttk.Frame(footer)
         step3.pack(fill="x")
         self.start_btn = ttk.Button(step3, text="Boshlash", style="Primary.TButton",
                                      command=self.start_conversion)
@@ -596,6 +668,8 @@ class App:
             command=self.open_output_folder, state="disabled",
         )
         self.open_folder_btn.pack(side="left", padx=(8, 0))
+
+        self._separator(outer)
 
         # Jurnal / natija
         ttk.Label(outer, text="Jarayon", style="Muted.TLabel").pack(anchor="w", pady=(20, 6))
@@ -832,16 +906,21 @@ class App:
 
         if self.manual_items:
             self._log(f"\n--- Qo'lda kiritilgan mahsulotlar ({len(self.manual_items)} ta) ---")
-            enrich_classifier_codes(self.manual_items, classifier_cache, self._log)
-            if combine:
-                combined_items.extend(self.manual_items)
-            else:
-                out_dir = self._default_out_dir()
-                stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-                out_path = unique_path(out_dir, f"product_list_qolda_{stamp}.xlsx")
-                write_product_list(self.manual_items, out_path)
-                saved_paths.append(out_path)
-                self._log(f"Saqlandi: {out_path}")
+            try:
+                enrich_classifier_codes(self.manual_items, classifier_cache, self._log)
+                if combine:
+                    combined_items.extend(self.manual_items)
+                else:
+                    out_dir = self._default_out_dir()
+                    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+                    out_path = unique_path(out_dir, f"product_list_qolda_{stamp}.xlsx")
+                    write_product_list(self.manual_items, out_path)
+                    saved_paths.append(out_path)
+                    self._log(f"Saqlandi: {out_path}")
+            except Exception as exc:  # noqa: BLE001
+                error_count += 1
+                self._log(f"XATOLIK (qo'lda kiritilganlarni saqlashda): {exc}")
+                report_event("🔴 Xato (qo'lda kiritishda)", str(exc))
 
         for path in self.selected_files:
             base = os.path.basename(path)
@@ -866,15 +945,21 @@ class App:
             except Exception as exc:  # noqa: BLE001
                 error_count += 1
                 self._log(f"XATOLIK: {exc}")
+                report_event("🔴 Xato (fayl o'qishda)", f"fayl: {base}\nxato: {exc}")
 
         if combine and combined_items:
-            out_dir = self._default_out_dir()
-            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-            out_path = unique_path(out_dir, f"product_list_combined_{stamp}.xlsx")
-            write_product_list(combined_items, out_path)
-            saved_paths.append(out_path)
-            self._log(f"\n=== Barchasi birlashtirildi: {len(combined_items)} ta mahsulot ===")
-            self._log(f"Saqlandi: {out_path}")
+            try:
+                out_dir = self._default_out_dir()
+                stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+                out_path = unique_path(out_dir, f"product_list_combined_{stamp}.xlsx")
+                write_product_list(combined_items, out_path)
+                saved_paths.append(out_path)
+                self._log(f"\n=== Barchasi birlashtirildi: {len(combined_items)} ta mahsulot ===")
+                self._log(f"Saqlandi: {out_path}")
+            except Exception as exc:  # noqa: BLE001
+                error_count += 1
+                self._log(f"XATOLIK (saqlashda): {exc}")
+                report_event("🔴 Xato (birlashtirib saqlashda)", str(exc))
 
         self._log(f"\nTayyor. {len(self.selected_files)} ta fayl ishlandi"
                    f"{f', {error_count} tasida xatolik' if error_count else ''}.")
@@ -893,8 +978,29 @@ class App:
         )
 
 
+def _enable_dpi_awareness():
+    """Tk() yaratilishidan OLDIN chaqiriladi — Windows monitor masshtabi
+    125%/150% bo'lganda elementlar siljib ustma-ust tushib qolmasligi uchun."""
+    try:
+        from ctypes import windll
+        windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+    except Exception:
+        try:
+            from ctypes import windll
+            windll.user32.SetProcessDPIAware()  # eski Windows uchun
+        except Exception:
+            pass
+
+
 def main():
+    _enable_dpi_awareness()
     root = tk.Tk()
+    try:
+        dpi = root.winfo_fpixels("1i")
+        if dpi > 0:
+            root.tk.call("tk", "scaling", dpi / 72.0)
+    except Exception:
+        pass
     App(root)
     root.mainloop()
 
