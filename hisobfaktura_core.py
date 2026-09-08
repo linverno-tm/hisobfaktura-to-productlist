@@ -13,7 +13,7 @@ Bu fayl GitHub'da saqlanadi va launcher.py orqali har ishga tushganda
 avtomatik yangilanadi — bu yerni tahrirlash = barcha foydalanuvchilarning
 dasturi keyingi ochilishda yangilanadi degani.
 """
-__version__ = "2026-09-08.2"
+__version__ = "2026-09-08.3"
 
 import os
 import re
@@ -22,6 +22,7 @@ import json
 import threading
 import queue
 import datetime
+import tempfile
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -40,6 +41,22 @@ HEADERS = [
     "Название товара", "Штрих код", "Ед. измерения", "Цена", "НДС %",
     "Избранное", "Маркировка", "ИКПУ", "Код ед. измерения тасниф",
 ]
+
+# 2026-09-08: SmartPOS'da 15 ustunli YANGI shablon ham topildi (sayt
+# "Количество полей в файле должно быть равно 15" deb rad etganda). Ikkala
+# shablon ham qo'llab-quvvatlanadi — foydalanuvchi UI'da tanlaydi.
+HEADERS_V2 = [
+    "Id", "Название продукта", "Категория", "Штрих код", "ИКПУ",
+    "Маркированный", "Штучный", "Единица измерения", "Код упаковки",
+    "Комиссионный инн", "Пинфл", "Тип владельца продукта/услуги",
+    "Название Магазина", "Цена", "НДС",
+]
+
+# "Штучный" ustuni uchun: dona-dona sanaladigan (diskret) o'lchov birliklari.
+DISCRETE_UNITS = {
+    "штук", "упаковка", "блок", "коробка", "банка", "комплект",
+    "комплект / набор", "пара", "блистер", "тюбик", "флакон", "человек",
+}
 
 UNITS = [
     "упаковка", "килограмм", "миллилитр", "блок", "коробка", "куб", "ампула",
@@ -514,6 +531,87 @@ def write_product_list(items, out_path):
     wb.save(out_path)
 
 
+def write_product_list_v2(items, out_path, store_name=""):
+    """SmartPOS'ning 15 ustunli yangi shabloniga yozadi.
+
+    2026-09-08: haqiqiy mavjud tovarlar namunasidan aniqlangan (SmartPOS'dan
+    eksport qilingan fayl) — Цена son, НДС kasr (0.12 = 12%), Единица
+    измерения qisqartma ("шт"), Штрих код bo'sh bo'lishi mumkin.
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Продукты"
+    ws.append(HEADERS_V2)
+
+    for it in items:
+        unit = it["unit"]
+        unit_v2 = "шт" if unit == "штук" else unit
+        shtuchny = "да" if unit in DISCRETE_UNITS else "нет"
+        marking_v2 = "да" if it["marking"] == "Да" else "нет"
+
+        vat_raw = it["vat"]
+        if isinstance(vat_raw, str) and "без" in vat_raw.lower():
+            vat_v2 = 0.0
+        else:
+            try:
+                vat_v2 = round(float(vat_raw) / 100, 4)
+            except (TypeError, ValueError):
+                vat_v2 = 0.0
+
+        try:
+            price_v2 = float(it["price"])
+        except (TypeError, ValueError):
+            price_v2 = 0.0
+
+        ws.append([
+            "",                       # Id — yangi tovar uchun bo'sh
+            it["name"],
+            "",                       # Категория
+            it["barcode"],
+            it["ikpu"],
+            marking_v2,
+            shtuchny,
+            unit_v2,
+            it["classifier_code"] or "",
+            "",                       # Комиссионный инн
+            "",                       # Пинфл
+            "0",                      # Тип владельца продукта/услуги
+            store_name,
+            price_v2,
+            vat_v2,
+        ])
+
+    wb.save(out_path)
+
+
+# ---------------------------------------------------------------------------
+# Mahalliy sozlamalar (do'kon nomi, tanlangan shablon) — kompyuterda
+# saqlanadi, har safar qayta so'ralmaydi.
+# ---------------------------------------------------------------------------
+
+def _config_path():
+    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    d = os.path.join(base, "HisobFaktura2ProductList")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "config.json")
+
+
+def load_config():
+    try:
+        with open(_config_path(), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_config(cfg):
+    try:
+        with open(_config_path(), "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 def unique_path(out_dir, base_name):
     """base_name.xlsx band bo'lsa _2, _3 ... qo'shib beradi."""
     stem, ext = os.path.splitext(base_name)
@@ -563,6 +661,11 @@ class App:
         self.combine_var = tk.BooleanVar(value=True)
         self.log_queue = queue.Queue()
         self.manual_items = []
+
+        self.config = load_config()
+        self.store_name_var = tk.StringVar(value=self.config.get("store_name", ""))
+        self.template_var = tk.StringVar(
+            value=self.config.get("template", "15 ustunli (yangi)"))
 
         self._setup_style()
         self._build_ui()
@@ -696,6 +799,27 @@ class App:
             outer, text="Barchasini BITTA Excel fayliga birlashtirish",
             variable=self.combine_var,
         ).pack(anchor="w", pady=(14, 0))
+
+        row_tpl = ttk.Frame(outer)
+        row_tpl.pack(fill="x", pady=(14, 0))
+        ttk.Label(row_tpl, text="Shablon:", style="TLabel").pack(side="left")
+        template_combo = ttk.Combobox(
+            row_tpl, textvariable=self.template_var, state="readonly", font=FONT,
+            values=["15 ustunli (yangi)", "9 ustunli (eski)"], width=20,
+        )
+        template_combo.pack(side="left", padx=(8, 0))
+        template_combo.bind("<<ComboboxSelected>>", lambda e: self._save_settings())
+
+        row_store = ttk.Frame(outer)
+        row_store.pack(fill="x", pady=(10, 0))
+        ttk.Label(row_store, text="Do'kon nomi:", style="TLabel").pack(side="left")
+        store_entry = ttk.Entry(row_store, textvariable=self.store_name_var, font=FONT, width=34)
+        store_entry.pack(side="left", padx=(8, 0))
+        store_entry.bind("<FocusOut>", lambda e: self._save_settings())
+        ttk.Label(
+            outer, text="(faqat 15 ustunli shablon uchun kerak — bir marta kiritilsa, esda qoladi)",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
 
         self._separator(outer)
 
@@ -925,6 +1049,18 @@ class App:
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
         return desktop if os.path.isdir(desktop) else os.path.expanduser("~")
 
+    def _save_settings(self):
+        self.config["store_name"] = self.store_name_var.get().strip()
+        self.config["template"] = self.template_var.get()
+        save_config(self.config)
+
+    def _write_output(self, items, out_path):
+        """Tanlangan shablonga (15 yoki 9 ustunli) qarab faylga yozadi."""
+        if self.template_var.get().startswith("15"):
+            write_product_list_v2(items, out_path, self.store_name_var.get().strip())
+        else:
+            write_product_list(items, out_path)
+
     # ---------- Log ----------
     def _log(self, text):
         self.log_queue.put(text)
@@ -949,6 +1085,9 @@ class App:
                 "Avval hisob-faktura fayl(lar)ini tanlang yoki 'Mahsulot qo'shish' orqali qo'lda kiriting.",
             )
             return
+        self._save_settings()
+        if self.template_var.get().startswith("15") and not self.store_name_var.get().strip():
+            self._log("DIQQAT: 'Do'kon nomi' bo'sh — 15 ustunli shablonda 'Название Магазина' bo'sh qoladi.")
         self.start_btn.config(state="disabled", text="Ishlanmoqda...")
         self.open_folder_btn.config(state="disabled")
         thread = threading.Thread(target=self._run_conversion, daemon=True)
@@ -971,7 +1110,7 @@ class App:
                     out_dir = self._default_out_dir()
                     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
                     out_path = unique_path(out_dir, f"product_list_qolda_{stamp}.xlsx")
-                    write_product_list(self.manual_items, out_path)
+                    self._write_output(self.manual_items, out_path)
                     saved_paths.append(out_path)
                     self._log(f"Saqlandi: {out_path}")
             except Exception as exc:  # noqa: BLE001
@@ -996,7 +1135,7 @@ class App:
                 else:
                     out_dir = self.output_dir or os.path.dirname(path) or "."
                     out_path = unique_path(out_dir, default_out_name(path))
-                    write_product_list(items, out_path)
+                    self._write_output(items, out_path)
                     saved_paths.append(out_path)
                     self._log(f"Saqlandi: {out_path}")
             except Exception as exc:  # noqa: BLE001
@@ -1013,7 +1152,7 @@ class App:
                 out_dir = self._default_out_dir()
                 stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
                 out_path = unique_path(out_dir, f"product_list_combined_{stamp}.xlsx")
-                write_product_list(combined_items, out_path)
+                self._write_output(combined_items, out_path)
                 saved_paths.append(out_path)
                 self._log(f"\n=== Barchasi birlashtirildi: {len(combined_items)} ta mahsulot ===")
                 self._log(f"Saqlandi: {out_path}")
