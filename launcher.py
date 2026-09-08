@@ -19,14 +19,15 @@ import types
 import tempfile
 import urllib.request
 
+# ASOSIY manba: raw.githubusercontent.com — CDN, so'rovlar soni cheklanmagan.
+# Yangi push'dan keyin bir necha daqiqa kechikishi mumkin, lekin bu muhim emas.
 RAW_URL = (
     "https://raw.githubusercontent.com/linverno-tm/"
     "hisobfaktura-to-productlist/main/hisobfaktura_core.py"
 )
-# raw.githubusercontent.com CDN'i yangi push'dan keyin bir necha daqiqa
-# kechikishi mumkin — shuning uchun asosiy manba sifatida GitHub API
-# ishlatiladi (kechikishsiz, doim eng so'nggi commit'ni beradi), raw URL
-# esa zaxira sifatida qoladi.
+# ZAXIRA manba: GitHub API — kechikishsiz, lekin avtorizatsiyasiz so'rovlar
+# soati 60 tagacha cheklangan (bir IP dan). Shuning uchun faqat RAW ishlamay
+# qolganda ishlatiladi.
 API_URL = (
     "https://api.github.com/repos/linverno-tm/"
     "hisobfaktura-to-productlist/contents/hisobfaktura_core.py?ref=main"
@@ -51,8 +52,8 @@ def _bundled_fallback_path():
 def _load_from_url():
     errors = []
     for url, headers in (
-        (API_URL, {"Accept": "application/vnd.github.raw", "User-Agent": "HisobFaktura2ProductList"}),
         (RAW_URL, {"User-Agent": "HisobFaktura2ProductList"}),
+        (API_URL, {"Accept": "application/vnd.github.raw", "User-Agent": "HisobFaktura2ProductList"}),
     ):
         try:
             req = urllib.request.Request(url, headers=headers)
