@@ -13,7 +13,7 @@ Bu fayl GitHub'da saqlanadi va launcher.py orqali har ishga tushganda
 avtomatik yangilanadi — bu yerni tahrirlash = barcha foydalanuvchilarning
 dasturi keyingi ochilishda yangilanadi degani.
 """
-__version__ = "2026-09-08.1"
+__version__ = "2026-09-08.2"
 
 import os
 import re
@@ -161,16 +161,71 @@ def _resolve_field_indices(header_map):
 
 
 def _find_item_table(soup):
-    """Hisob-faktura jadvalini (thead+tbody) qidiradi."""
+    """Hisob-faktura jadvalini qidiradi.
+
+    Ikki xil tuzilishni qo'llab-quvvatlaydi:
+    1) <thead>+<tbody> bilan (ko'pchilik hisob-fakturalarda shunday).
+    2) "Tekis" jadval — <thead>/<tbody> teglarisiz, hammasi to'g'ridan-to'g'ri
+       <table> ichida <tr> bo'lib keladi (ba'zi ta'minotchilarda shunday).
+
+    Qaytaradi: (header_map, mahsulot qatorlari ro'yxati — list of <tr>).
+    Ichma-ich jadval takrorlanishining oldini olish uchun har doim faqat
+    recursive=False bilan qidiriladi.
+    """
     for table in soup.find_all("table"):
         thead = table.find("thead")
         tbody = table.find("tbody")
-        if thead is None or tbody is None:
-            continue
-        header_map = _find_header_map(thead)
+        if thead is not None and tbody is not None:
+            header_map = _find_header_map(thead)
+            if header_map:
+                return header_map, tbody.find_all("tr", recursive=False)
+
+        direct_rows = table.find_all("tr", recursive=False)
+        header_idx = None
+        header_map = None
+        for i, tr in enumerate(direct_rows):
+            text = tr.get_text().lower()
+            if "маҳсулот" in text or "наименование" in text:
+                candidate = _parse_header_row(tr)
+                if candidate:
+                    header_idx, header_map = i, candidate
+                    break
         if header_map:
-            return header_map, tbody
+            return header_map, direct_rows[header_idx + 1:]
     return None, None
+
+
+class ParseError(RuntimeError):
+    """Xato + tashxis matni (kuzatuvga to'liq, ekranga qisqa ko'rsatish uchun)."""
+
+    def __init__(self, message, diagnostic=""):
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
+def _diagnose_missing_table(soup, html):
+    """Jadval topilmagach, fayl ichida haqiqatda nima borligini yig'ib beradi
+    — bu tashxis kuzatuv (GitHub) ga yuboriladi, fayl o'zi yuborilmasa ham
+    sababni tushunish uchun."""
+    tables = soup.find_all("table")
+    lines = [f"jami <table> soni: {len(tables)}"]
+    for i, table in enumerate(tables[:6]):
+        thead = table.find("thead")
+        tbody = table.find("tbody")
+        trs = table.find_all("tr")
+        sample = ""
+        if thead is not None:
+            sample = thead.get_text(" ", strip=True)[:150]
+        elif trs:
+            sample = trs[0].get_text(" ", strip=True)[:150]
+        lines.append(
+            f"  jadval {i}: thead={'bor' if thead is not None else 'yoq'} "
+            f"tbody={'bor' if tbody is not None else 'yoq'} tr soni={len(trs)}"
+            f"\n    namuna: {sample}"
+        )
+    if not tables:
+        lines.append(f"HTML boshi (birinchi 300 belgi): {html[:300]!r}")
+    return "\n".join(lines)
 
 
 def map_unit(raw, warnings, name):
@@ -353,20 +408,22 @@ def parse_invoice(path):
     with open(path, encoding="utf-8", errors="ignore") as fh:
         html = fh.read()
     soup = BeautifulSoup(html, "html.parser")
-    header_map, tbody = _find_item_table(soup)
-    if tbody is None:
-        raise RuntimeError(
+    header_map, rows = _find_item_table(soup)
+    if rows is None:
+        raise ParseError(
             "Hisob-faktura jadvali topilmadi. Fayl kutilgan '.xls (HTML)' "
-            "hisobvaraq-faktura formatida emas ko'rinadi."
+            "hisobvaraq-faktura formatida emas ko'rinadi.",
+            diagnostic=_diagnose_missing_table(soup, html),
         )
 
     idx = _resolve_field_indices(header_map)
     missing_required = [f for f in ("name", "price") if f not in idx]
     if missing_required:
-        raise RuntimeError(
+        raise ParseError(
             "Jadval sarlavhasida quyidagi ustunlar topilmadi: "
             + ", ".join(missing_required)
-            + ". Fayl tuzilishi kutilganidan farq qiladi — namuna sifatida yuboring."
+            + ". Fayl tuzilishi kutilganidan farq qiladi — namuna sifatida yuboring.",
+            diagnostic="topilgan sarlavhalar: " + ", ".join(header_map.keys()),
         )
 
     def get(cells, field, default=""):
@@ -377,7 +434,7 @@ def parse_invoice(path):
 
     items = []
     warnings = []
-    for tr in tbody.find_all("tr"):
+    for tr in rows:
         cells = [c.get_text(strip=True) for c in tr.find_all(["td", "th"])]
         if not cells or not cells[0].strip().isdigit():
             continue  # "Жами" jami qatori yoki bo'sh qator
@@ -945,7 +1002,11 @@ class App:
             except Exception as exc:  # noqa: BLE001
                 error_count += 1
                 self._log(f"XATOLIK: {exc}")
-                report_event("🔴 Xato (fayl o'qishda)", f"fayl: {base}\nxato: {exc}")
+                detail = f"fayl: {base}\nxato: {exc}"
+                diag = getattr(exc, "diagnostic", "")
+                if diag:
+                    detail += f"\n\n{diag}"
+                report_event("🔴 Xato (fayl o'qishda)", detail)
 
         if combine and combined_items:
             try:
