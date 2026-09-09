@@ -13,7 +13,7 @@ Bu fayl GitHub'da saqlanadi va launcher.py orqali har ishga tushganda
 avtomatik yangilanadi — bu yerni tahrirlash = barcha foydalanuvchilarning
 dasturi keyingi ochilishda yangilanadi degani.
 """
-__version__ = "2026-09-08.4"
+__version__ = "2026-09-09.1"
 
 import os
 import re
@@ -308,31 +308,39 @@ IKPU_API_URL = "https://tasnif.soliq.uz/api/cls-api/mxik/get/by-mxik"
 
 
 def fetch_classifier_code(ikpu, timeout=6):
-    """Bitta ИКПУ uchun rasmiy 'Код ед. измерения тасниф' kodini oladi.
+    """Bitta ИКПУ uchun rasmiy 'Код ед. измерения тасниф' kodini va
+    markировка (useCard) belgisini oladi.
 
-    Qaytaradi: (kod_yoki_None, xatolik_matni_yoki_None)
+    Qaytaradi: (kod_yoki_None, use_card_bool_yoki_None, xatolik_matni_yoki_None)
+
+    useCard=True — bu ИКПУ rasmiy tasnifda "маркировка/kartochka talab
+    qiladigan" toifaga kiradi. 2026-09-08/09'da tasdiqlangan: bunday
+    tovarlar bulk Excel import orqali katalogga kiradi, lekin hech qanday
+    do'kon/kassaga BOG'LANMAYDI (savdo nuqtasida ko'rinmaydi) — na
+    SmartPOS'da ("ИКПУ неверна"), na Tinda'da ("stores": bo'sh qoladi).
     """
     if not ikpu:
-        return None, None
+        return None, None, None
     try:
         url = f"{IKPU_API_URL}?mxikCode={ikpu}&lang=uz"
         req = urllib.request.Request(url, headers={"User-Agent": "HisobFaktura2ProductList"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.load(resp)
+        use_card = bool(data.get("useCard"))
         packages = data.get("packages") or []
         if not packages:
-            return None, "tasnif.soliq.uz'da bu ИКПУ uchun o'lchov birligi (упаковка) topilmadi"
+            return None, use_card, "tasnif.soliq.uz'da bu ИКПУ uchun o'lchov birligi (упаковка) topilmadi"
         code = packages[0].get("code")
-        return (str(code) if code is not None else None), None
+        return (str(code) if code is not None else None), use_card, None
     except Exception as exc:  # noqa: BLE001
-        return None, str(exc)
+        return None, None, str(exc)
 
 
 def enrich_classifier_codes(items, cache=None, log=None):
     """Har bir mahsulotning 'classifier_code' maydonini tasnif.soliq.uz'dan
-    to'ldiradi. `cache` — {ikpu: kod} lug'ati, bir nechta faylda takrorlangan
-    ИКПУлar uchun qayta so'rov yubormaslik uchun (chaqiruvchi saqlab, keyingi
-    fayllarga ham shu lug'atni berishi mumkin)."""
+    to'ldiradi va markировка talab qiladigan (useCard=1) tovarlar haqida
+    ogohlantiradi. `cache` — {ikpu: (kod, use_card)} lug'ati, bir nechta
+    fayl uchun qayta so'rov yubormaslik uchun."""
     if cache is None:
         cache = {}
 
@@ -345,24 +353,41 @@ def enrich_classifier_codes(items, cache=None, log=None):
             log(f"ИКПУ kodlari tasnif.soliq.uz'dan tekshirilmoqda ({len(unique_ikpus)} ta noyob kod)...")
 
         def _lookup(code):
-            val, err = fetch_classifier_code(code)
-            return code, val, err
+            val, use_card, err = fetch_classifier_code(code)
+            return code, val, use_card, err
 
         with ThreadPoolExecutor(max_workers=8) as ex:
-            for code, val, err in ex.map(_lookup, unique_ikpus):
-                cache[code] = val
+            for code, val, use_card, err in ex.map(_lookup, unique_ikpus):
+                cache[code] = (val, use_card)
                 if err and log:
                     log(f"  DIQQAT: ИКПУ {code} uchun tasnif kodi topilmadi — {err}")
 
     missing = 0
+    marked_required = []
     for it in items:
         ikpu = it.get("ikpu")
         if ikpu:
-            it["classifier_code"] = cache.get(ikpu)
-            if not it["classifier_code"]:
+            code, use_card = cache.get(ikpu, (None, None))
+            it["classifier_code"] = code
+            if not code:
                 missing += 1
+            if use_card:
+                marked_required.append(it["name"])
+
     if missing and log:
         log(f"  {missing} ta mahsulotda 'Код ед. измерения тасниф' topilmadi — saytga yuklashdan oldin qo'lda tekshiring.")
+
+    if marked_required and log:
+        log(f"\n⚠ DIQQAT: {len(marked_required)} ta tovar МАРКИРОВКА (kripto-kod) talab qiladi:")
+        for name in marked_required[:10]:
+            log(f"  - {name[:80]}")
+        if len(marked_required) > 10:
+            log(f"  ... yana {len(marked_required) - 10} ta")
+        log("  Bunday tovarlar Excel orqali katalogga tushadi, LEKIN hech qanday "
+            "do'kon/kassaga bog'lanmaydi — savdo nuqtasida (kassa apparatida) "
+            "ko'rinmaydi. Saytning o'z \"tovar qo'shish\" bo'limidan qo'lda "
+            "(markировка kodi bilan) alohida qo'shish kerak.")
+
     return cache
 
 
@@ -1026,10 +1051,14 @@ Versiya: {__version__}
             classifier_status.config(text="Qidirilmoqda...")
 
             def worker():
-                code, err = fetch_classifier_code(ikpu)
+                code, use_card, err = fetch_classifier_code(ikpu)
                 def apply():
                     classifier_code_holder["value"] = code
-                    if code:
+                    if code and use_card:
+                        classifier_status.config(
+                            text=f"✓ Tasnif kodi: {code}   ⚠ MARKировка talab qiladi — "
+                                 "kassada ko'rinmasligi mumkin, saytdan alohida qo'shing")
+                    elif code:
                         classifier_status.config(text=f"✓ Tasnif kodi topildi: {code}")
                     else:
                         classifier_status.config(text=f"⚠ Topilmadi: {err or 'ИКПУ noto\'g\'ri bo\'lishi mumkin'}")
