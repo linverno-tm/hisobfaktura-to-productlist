@@ -13,7 +13,7 @@ Bu fayl GitHub'da saqlanadi va launcher.py orqali har ishga tushganda
 avtomatik yangilanadi — bu yerni tahrirlash = barcha foydalanuvchilarning
 dasturi keyingi ochilishda yangilanadi degani.
 """
-__version__ = "2026-09-09.1"
+__version__ = "2026-09-09.2"
 
 import os
 import re
@@ -307,6 +307,27 @@ def extract_ikpu(text):
 IKPU_API_URL = "https://tasnif.soliq.uz/api/cls-api/mxik/get/by-mxik"
 
 
+def _pick_best_package(packages):
+    """Bir ИКПУ uchun bir nechta 'упаковка' varianti bo'lishi mumkin
+    (masalan umumiy/generik ИКПУлarda 10+ tagacha). 2026-09-09'da
+    tasdiqlandi: birinchisini (index 0) olaverish noto'g'ri bo'lishi
+    mumkin — sayt "Единица измерения неверна" deb rad etadi.
+
+    Eng ishonchlisi — nomi ODDIY, ko'paytiruvchisiz bitta birlik
+    (masalan "дона", "1 дона"), chunki "5 та комплект * 1 дона" yoki
+    "500 дона" kabi variantlar ulgurji/to'plam qadoqlash uchun, oddiy
+    donalab sotiladigan tovar uchun emas.
+    """
+    def score(pkg):
+        name = (pkg.get("name") or "").strip()
+        has_multiplier = "*" in name
+        m = re.match(r"^([\d.]+)", name)
+        leading_num = float(m.group(1)) if m else 1.0
+        return (has_multiplier, leading_num != 1.0, len(name))
+
+    return min(packages, key=score)
+
+
 def fetch_classifier_code(ikpu, timeout=6):
     """Bitta ИКПУ uchun rasmiy 'Код ед. измерения тасниф' kodini va
     markировка (useCard) belgisini oladi.
@@ -330,7 +351,8 @@ def fetch_classifier_code(ikpu, timeout=6):
         packages = data.get("packages") or []
         if not packages:
             return None, use_card, "tasnif.soliq.uz'da bu ИКПУ uchun o'lchov birligi (упаковка) topilmadi"
-        code = packages[0].get("code")
+        best = _pick_best_package(packages)
+        code = best.get("code")
         return (str(code) if code is not None else None), use_card, None
     except Exception as exc:  # noqa: BLE001
         return None, None, str(exc)
@@ -689,8 +711,6 @@ class App:
 
         self.config = load_config()
         self.store_name_var = tk.StringVar(value=self.config.get("store_name", ""))
-        self.template_var = tk.StringVar(
-            value=self.config.get("template", "15 ustunli (yangi)"))
 
         self._setup_style()
         self._build_ui()
@@ -829,24 +849,16 @@ class App:
             variable=self.combine_var,
         ).pack(anchor="w", pady=(14, 0))
 
-        row_tpl = ttk.Frame(outer)
-        row_tpl.pack(fill="x", pady=(14, 0))
-        ttk.Label(row_tpl, text="Shablon:", style="TLabel").pack(side="left")
-        template_combo = ttk.Combobox(
-            row_tpl, textvariable=self.template_var, state="readonly", font=FONT,
-            values=["15 ustunli (yangi)", "9 ustunli (eski)"], width=20,
-        )
-        template_combo.pack(side="left", padx=(8, 0))
-        template_combo.bind("<<ComboboxSelected>>", lambda e: self._save_settings())
-
         row_store = ttk.Frame(outer)
-        row_store.pack(fill="x", pady=(10, 0))
+        row_store.pack(fill="x", pady=(14, 0))
         ttk.Label(row_store, text="Do'kon nomi:", style="TLabel").pack(side="left")
         store_entry = ttk.Entry(row_store, textvariable=self.store_name_var, font=FONT, width=34)
         store_entry.pack(side="left", padx=(8, 0))
         store_entry.bind("<FocusOut>", lambda e: self._save_settings())
         ttk.Label(
-            outer, text="(faqat 15 ustunli shablon uchun kerak — bir marta kiritilsa, esda qoladi)",
+            outer,
+            text="(15 ustunli shablon uchun kerak — bir marta kiritilsa, esda qoladi. "
+                 "Ikkala shablon — 9 va 15 ustunli — avtomatik, alohida fayl qilib chiqariladi.)",
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -931,18 +943,16 @@ mumkin (10-15 tagacha bemalol).
 Natija qayerga saqlanishini tanlang. "Barchasini BITTA Excelga
 birlashtirish" yoqilgan bo'lsa — hammasi bitta faylga yig'iladi.
 
-3) SHABLON
-SmartPOS saytida "Юклаш" tugmasini bosganda qaysi shablon so'ralgani
-muhim:
-  • 15 ustunli (yangi) — standart, hozir asosiy ishlaydigan format.
-  • 9 ustunli (eski) — agar sayt "Название товара, Штрих код..." каби
-    eski ustunlarni kutsa.
-Xato chiqsa (masalan "Количество полей... равно 15" yoki "равно 9"),
-shablonni almashtirib qayta urinib ko'ring.
+3) SHABLON — AVTOMATIK
+Dastur tanlashingizni so'ramaydi — har safar IKKALA formatni ham
+("..._9ustunli.xlsx" va "..._15ustunli.xlsx") alohida fayl qilib
+chiqaradi. SmartPOS saytida "Юклаш" tugmasi qaysi birini so'rasa
+("Количество полей... равно 9" yoki "...равно 15"), o'shani tanlab
+yuklaysiz.
 
 4) DO'KON NOMI
-Faqat 15 ustunli shablon uchun kerak — SmartPOS'dagi ro'yxatdan o'tgan
-aniq nomni yozing. Bir marta kiritilsa, doim eslab qoladi.
+15 ustunli fayl uchun kerak — SmartPOS'dagi ro'yxatdan o'tgan aniq
+nomni yozing. Bir marta kiritilsa, doim eslab qoladi.
 
 5) QO'LDA QO'SHISH
 Fayl orqali to'g'ri o'qilmaydigan yoki markировка-toifadagi (uy-ro'zg'or
@@ -1156,15 +1166,18 @@ Versiya: {__version__}
 
     def _save_settings(self):
         self.config["store_name"] = self.store_name_var.get().strip()
-        self.config["template"] = self.template_var.get()
         save_config(self.config)
 
-    def _write_output(self, items, out_path):
-        """Tanlangan shablonga (15 yoki 9 ustunli) qarab faylga yozadi."""
-        if self.template_var.get().startswith("15"):
-            write_product_list_v2(items, out_path, self.store_name_var.get().strip())
-        else:
-            write_product_list(items, out_path)
+    def _write_output(self, items, out_dir, base_stem):
+        """Har ikkala shablonga (9 va 15 ustunli) ham alohida fayl qilib
+        yozadi — foydalanuvchi tanlamaydi, dastur o'zi ikkalasini ham
+        beradi, saytdagi joriy talabga qaysi biri mos kelsa o'shani
+        ishlatish mumkin. Qaytaradi: yozilgan fayllar ro'yxati."""
+        path_v1 = unique_path(out_dir, f"{base_stem}_9ustunli.xlsx")
+        write_product_list(items, path_v1)
+        path_v2 = unique_path(out_dir, f"{base_stem}_15ustunli.xlsx")
+        write_product_list_v2(items, path_v2, self.store_name_var.get().strip())
+        return [path_v1, path_v2]
 
     # ---------- Log ----------
     def _log(self, text):
@@ -1191,8 +1204,8 @@ Versiya: {__version__}
             )
             return
         self._save_settings()
-        if self.template_var.get().startswith("15") and not self.store_name_var.get().strip():
-            self._log("DIQQAT: 'Do'kon nomi' bo'sh — 15 ustunli shablonda 'Название Магазина' bo'sh qoladi.")
+        if not self.store_name_var.get().strip():
+            self._log("DIQQAT: 'Do'kon nomi' bo'sh — 15 ustunli faylda 'Название Магазина' bo'sh qoladi.")
         self.start_btn.config(state="disabled", text="Ishlanmoqda...")
         self.open_folder_btn.config(state="disabled")
         thread = threading.Thread(target=self._run_conversion, daemon=True)
@@ -1214,10 +1227,10 @@ Versiya: {__version__}
                 else:
                     out_dir = self._default_out_dir()
                     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-                    out_path = unique_path(out_dir, f"product_list_qolda_{stamp}.xlsx")
-                    self._write_output(self.manual_items, out_path)
-                    saved_paths.append(out_path)
-                    self._log(f"Saqlandi: {out_path}")
+                    written = self._write_output(self.manual_items, out_dir, f"product_list_qolda_{stamp}")
+                    saved_paths.extend(written)
+                    for p in written:
+                        self._log(f"Saqlandi: {p}")
             except Exception as exc:  # noqa: BLE001
                 error_count += 1
                 self._log(f"XATOLIK (qo'lda kiritilganlarni saqlashda): {exc}")
@@ -1239,10 +1252,11 @@ Versiya: {__version__}
                     combined_items.extend(items)
                 else:
                     out_dir = self.output_dir or os.path.dirname(path) or "."
-                    out_path = unique_path(out_dir, default_out_name(path))
-                    self._write_output(items, out_path)
-                    saved_paths.append(out_path)
-                    self._log(f"Saqlandi: {out_path}")
+                    stem = os.path.splitext(default_out_name(path))[0]
+                    written = self._write_output(items, out_dir, stem)
+                    saved_paths.extend(written)
+                    for p in written:
+                        self._log(f"Saqlandi: {p}")
             except Exception as exc:  # noqa: BLE001
                 error_count += 1
                 self._log(f"XATOLIK: {exc}")
@@ -1256,11 +1270,11 @@ Versiya: {__version__}
             try:
                 out_dir = self._default_out_dir()
                 stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-                out_path = unique_path(out_dir, f"product_list_combined_{stamp}.xlsx")
-                self._write_output(combined_items, out_path)
-                saved_paths.append(out_path)
+                written = self._write_output(combined_items, out_dir, f"product_list_combined_{stamp}")
+                saved_paths.extend(written)
                 self._log(f"\n=== Barchasi birlashtirildi: {len(combined_items)} ta mahsulot ===")
-                self._log(f"Saqlandi: {out_path}")
+                for p in written:
+                    self._log(f"Saqlandi: {p}")
             except Exception as exc:  # noqa: BLE001
                 error_count += 1
                 self._log(f"XATOLIK (saqlashda): {exc}")
